@@ -6,9 +6,31 @@ import { generarPDFBuffer } from '../utils/pdf';
 import { transporter } from '../utils/mailer';
 import { VentaCompleta } from '../types/Venta';
 
-export const obtenerVentas = async (_req: Request, res: Response) => {
+export const obtenerVentas = async (req: Request, res: Response) => {
+  const { estado } = req.query;
+
   try {
-    const [rows] = await db.query<RowDataPacket[]>('SELECT * FROM ventas');
+    let query = `
+      SELECT 
+        v.id, v.numero_venta, v.fecha, v.estado, 
+        c.nombre AS cliente_nombre, c.telefono AS cliente_telefono,
+        SUM(d.subtotal) AS total
+      FROM ventas v
+      JOIN clientes c ON v.id_cliente = c.id
+      JOIN detalle_venta d ON v.id = d.id_venta
+    `;
+
+    const params: any[] = [];
+
+    if (estado) {
+      query += ' WHERE v.estado = ?';
+      params.push(estado);
+    }
+
+    query += ' GROUP BY v.id ORDER BY v.fecha DESC';
+
+    const [rows] = await db.query<RowDataPacket[]>(query, params);
+
     res.json(rows);
   } catch (error) {
     console.error('Error al obtener ventas:', error);
