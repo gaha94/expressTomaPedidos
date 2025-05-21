@@ -6,6 +6,7 @@ import { checkRole } from '../middlewares/role.middleware'
 const router = Router()
 
 router.post('/productos', verifyToken, checkRole(['admin']), createProducto)
-router.get('/productos', verifyToken, getProductos)
+router.get('/productos', verifyToken, checkRole(['admin', 'vendedor', 'caja']), getProductos);
+
 
 export default router
