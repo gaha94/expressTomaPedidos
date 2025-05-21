@@ -17,5 +17,7 @@ router.post('/ventas/:id/enviar-comprobante', verifyToken, checkRole(['admin', '
 
 // Caja puede actualizar estado de la venta
 router.put('/ventas/:id/estado', verifyToken, checkRole(['admin', 'caja']), VentaController.actualizarEstadoVenta);
+router.get('/ventas/pendientes', verifyToken, checkRole(['admin', 'caja']), VentaController.obtenerVentasPendientes);
+
 
 export default router;

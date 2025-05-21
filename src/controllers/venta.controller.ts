@@ -38,6 +38,27 @@ export const obtenerVentas = async (req: Request, res: Response) => {
   }
 };
 
+// Dentro de src/controllers/venta.controller.ts
+export const obtenerVentasPendientes = async (_req: Request, res: Response) => {
+  try {
+    const [rows]: any = await db.query(
+      `SELECT v.id, v.numero_venta, c.nombre AS cliente, c.telefono, SUM(d.subtotal) AS monto
+       FROM ventas v
+       JOIN clientes c ON v.id_cliente = c.id
+       JOIN detalle_venta d ON v.id = d.id_venta
+       WHERE v.estado = 'pendiente'
+       GROUP BY v.id, v.numero_venta, c.nombre, c.telefono
+       ORDER BY v.fecha DESC`
+    )
+
+    res.json(rows)
+  } catch (error) {
+    console.error('Error al obtener ventas pendientes:', error)
+    res.status(500).json({ message: 'Error del servidor' })
+  }
+}
+
+
 export const obtenerVentaPorId = async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
