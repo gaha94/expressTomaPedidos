@@ -18,7 +18,7 @@ app.use(express.json());
 
 app.use('/api', authRoutes);
 app.use('/api', userRoutes);
-app.use('/api', clienteRoutes);
+app.use('/api/clientes', clienteRoutes);
 app.use('/api', ventaRoutes);
 app.use('/api', productoRoutes);
 app.use('/api', pagoRoutes);
