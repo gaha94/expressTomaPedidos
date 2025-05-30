@@ -235,3 +235,21 @@ export const enviarComprobantePorCorreo = async (req: Request, res: Response) =>
     res.status(500).json({ message: 'Error al enviar el comprobante' });
   }
 };
+
+export const cancelarVenta = async (req: Request, res: Response) => {
+  const { id } = req.params
+
+  try {
+    const [result] = await db.query('UPDATE ventas SET estado = ? WHERE id = ?', ['cancelado', id])
+
+    if ((result as any).affectedRows === 0) {
+      return res.status(404).json({ message: 'Venta no encontrada' })
+    }
+
+    res.json({ message: 'Venta cancelada correctamente' })
+  } catch (error) {
+    console.error('Error al cancelar venta:', error)
+    res.status(500).json({ message: 'Error al cancelar venta' })
+  }
+}
+
