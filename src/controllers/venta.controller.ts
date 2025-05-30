@@ -5,6 +5,7 @@ import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { generarPDFBuffer } from '../utils/pdf';
 import { transporter } from '../utils/mailer';
 import { VentaCompleta } from '../types/Venta';
+import { Op } from 'sequelize'
 
 export const obtenerVentas = async (req: Request, res: Response) => {
   const { estado } = req.query;
@@ -253,3 +254,21 @@ export const cancelarVenta = async (req: Request, res: Response) => {
   }
 }
 
+export const obtenerVentasDelVendedorHoy = async (req: Request, res: Response) => {
+  const vendedorId = req.user?.id // ← asegúrate que `req.user` esté seteado en `verifyToken`
+
+  if (!vendedorId) return res.status(401).json({ message: 'Vendedor no identificado' });
+
+  const hoy = new Date().toISOString().split('T')[0] // formato YYYY-MM-DD
+  const ventas = await Venta.findAll({
+    where: {
+      vendedorId,
+      fecha: {
+        [Op.startsWith]: hoy,
+      },
+    },
+    include: ['productos', 'cliente'],
+  });
+
+  res.json(ventas);
+};
