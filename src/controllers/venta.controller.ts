@@ -6,6 +6,7 @@ import { generarPDFBuffer } from '../utils/pdf';
 import { transporter } from '../utils/mailer';
 import * as VentaModel from '../models/venta.model'  // ✅ Correcto
 import { VentaCompleta } from '../types/Venta';
+console.log('🟢 Entró al endpoint /ventas/por-zona')
 
 export const obtenerVentas = async (req: Request, res: Response) => {
   const { estado } = req.query;
@@ -280,4 +281,40 @@ export const obtenerVentasDelVendedorHoy = async (req: Request, res: Response) =
     res.status(500).json({ message: 'Error al obtener ventas del vendedor' });
   }
 };
+
+export const obtenerVentasPorSucursalYFecha = async (req: Request, res: Response) => {
+  // Fuerza el tipo correcto
+  const sucursal_id = parseInt(req.query.sucursal_id as string)
+  const desde = req.query.desde as string
+  const hasta = req.query.hasta as string
+
+  console.log('✅ Parámetros forzados:')
+  console.log('sucursal_id:', sucursal_id)
+  console.log('desde:', desde)
+  console.log('hasta:', hasta)
+
+  try {
+    const [rows]: any = await db.query(
+      `SELECT v.id, v.estado, u.nombre as vendedor
+       FROM ventas v
+       JOIN users u ON u.id = v.id_usuario
+       WHERE v.sucursal_id = ? AND DATE(v.fecha) BETWEEN ? AND ?
+       ORDER BY v.fecha DESC`,
+      [sucursal_id, desde, hasta]
+    )
+
+    console.log('📦 Resultado SQL:', rows)
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Venta no encontrada' })
+    }
+
+    res.json(rows)
+  } catch (error) {
+    console.error('❌ Error SQL:', error)
+    res.status(500).json({ message: 'Error al obtener ventas por zona' })
+  }
+}
+
+
 

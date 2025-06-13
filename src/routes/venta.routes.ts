@@ -10,6 +10,8 @@ router.get('/ventas/pendientes', verifyToken, checkRole(['admin', 'caja']), Vent
 
 // Vendedor y admin pueden ver ventas
 router.get('/ventas', verifyToken, checkRole(['admin', 'vendedor']), VentaController.obtenerVentas);
+router.get('/ventas/por-zona', verifyToken, checkRole(['admin', 'vendedor']), VentaController.obtenerVentasPorSucursalYFecha);
+router.get('/ventas/vendedor/hoy', verifyToken, checkRole(['vendedor']), VentaController.obtenerVentasDelVendedorHoy);
 router.get('/ventas/:id', verifyToken, checkRole(['admin', 'vendedor']), VentaController.obtenerVentaPorId);
 
 // Vendedor y admin pueden crear ventas
@@ -24,7 +26,6 @@ router.put('/ventas/:id/estado', verifyToken, checkRole(['admin', 'caja']), Vent
 // Caja puede cancelar venta
 router.put('/ventas/:id/cancelar', verifyToken, checkRole(['admin', 'caja']), VentaController.cancelarVenta);
 
-router.get('/ventas/vendedor/hoy', verifyToken, checkRole(['vendedor']), VentaController.obtenerVentasDelVendedorHoy);
 
 
 export default router;

@@ -8,6 +8,7 @@ import clienteRoutes from './routes/cliente.routes';
 import productoRoutes from './routes/producto.routes'
 import pagoRoutes from './routes/pago.routes';
 import reporteRoutes from './routes/reporte.routes';
+import sucursalRoutes from './routes/sucursal.routes';
 
 dotenv.config();
 
@@ -23,6 +24,7 @@ app.use('/api', ventaRoutes);
 app.use('/api', productoRoutes);
 app.use('/api', pagoRoutes);
 app.use('/api', reporteRoutes);
+app.use('/api/sucursales', sucursalRoutes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
