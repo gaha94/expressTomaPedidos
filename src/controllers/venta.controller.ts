@@ -4,8 +4,8 @@ import { db } from '../config/db';
 import { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { generarPDFBuffer } from '../utils/pdf';
 import { transporter } from '../utils/mailer';
+import * as VentaModel from '../models/venta.model'  // ✅ Correcto
 import { VentaCompleta } from '../types/Venta';
-import { Op } from 'sequelize'
 
 export const obtenerVentas = async (req: Request, res: Response) => {
   const { estado } = req.query;
@@ -255,20 +255,29 @@ export const cancelarVenta = async (req: Request, res: Response) => {
 }
 
 export const obtenerVentasDelVendedorHoy = async (req: Request, res: Response) => {
-  const vendedorId = req.user?.id // ← asegúrate que `req.user` esté seteado en `verifyToken`
+  const vendedorId = req.user?.id;
 
   if (!vendedorId) return res.status(401).json({ message: 'Vendedor no identificado' });
 
-  const hoy = new Date().toISOString().split('T')[0] // formato YYYY-MM-DD
-  const ventas = await Venta.findAll({
-    where: {
-      vendedorId,
-      fecha: {
-        [Op.startsWith]: hoy,
-      },
-    },
-    include: ['productos', 'cliente'],
-  });
+  try {
+    const [rows] = await db.query<RowDataPacket[]>(
+      `SELECT 
+         v.id, v.numero_venta, v.fecha, v.estado, 
+         c.nombre AS cliente_nombre, c.telefono AS cliente_telefono,
+         SUM(d.subtotal) AS total
+       FROM ventas v
+       JOIN clientes c ON v.id_cliente = c.id
+       JOIN detalle_venta d ON v.id = d.id_venta
+       WHERE v.id_usuario = ? AND DATE(v.fecha) = CURDATE()
+       GROUP BY v.id
+       ORDER BY v.fecha DESC`,
+      [vendedorId]
+    );
 
-  res.json(ventas);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener ventas del vendedor:', error);
+    res.status(500).json({ message: 'Error al obtener ventas del vendedor' });
+  }
 };
+
