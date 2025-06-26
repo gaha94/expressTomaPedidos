@@ -82,24 +82,37 @@ export const crearVenta = async (req: Request, res: Response) => {
   }
 
   try {
-    const [result] = await db.query<ResultSetHeader>(
-      'INSERT INTO ventas (numero_venta, id_usuario, id_cliente) VALUES (?, ?, ?)',
-      [`V-${Date.now()}`, id_usuario, id_cliente]
-    );
-    const ventaId = result.insertId;
+    const connection = await db.getConnection();
 
-    for (const item of productos) {
-      const { id_producto, cantidad, precio_unitario } = item;
-      const subtotal = cantidad * precio_unitario;
-      await db.query(
-        'INSERT INTO detalle_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal) VALUES (?, ?, ?, ?, ?)',
-        [ventaId, id_producto, cantidad, precio_unitario, subtotal]
+    try {
+      await connection.beginTransaction();
+
+      const [result] = await connection.query<ResultSetHeader>(
+        'INSERT INTO ventas (numero_venta, id_usuario, id_cliente) VALUES (?, ?, ?)',
+        [`V-${Date.now()}`, id_usuario, id_cliente]
       );
-    }
+      const ventaId = result.insertId;
 
-    res.status(201).json({ message: 'Venta registrada', id: ventaId });
+      for (const item of productos) {
+        const { id_producto, cantidad, precio_unitario } = item;
+        const subtotal = cantidad * precio_unitario;
+        await connection.query(
+          'INSERT INTO detalle_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal) VALUES (?, ?, ?, ?, ?)',
+          [ventaId, id_producto, cantidad, precio_unitario, subtotal]
+        );
+      }
+
+      await connection.commit();
+      res.status(201).json({ message: 'Venta registrada', id: ventaId });
+    } catch (error) {
+      await connection.rollback();
+      console.error('Error al registrar venta:', error);
+      res.status(500).json({ message: 'Error al registrar la venta' });
+    } finally {
+      connection.release();
+    }
   } catch (error) {
-    console.error('Error al registrar venta:', error);
+    console.error('Error al obtener conexión de la base de datos:', error);
     res.status(500).json({ message: 'Error al registrar la venta' });
   }
 };
