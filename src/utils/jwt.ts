@@ -4,7 +4,6 @@ import jwt from 'jsonwebtoken'
 export interface UserPayload {
   id: number
   nombre: string
-  rol: 'admin' | 'vendedor' | 'caja'
 }
 
 const SECRET = process.env.JWT_SECRET || 'secreto'

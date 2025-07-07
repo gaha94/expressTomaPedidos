@@ -1,9 +1,9 @@
 import { Router } from 'express'
-import { obtenerSucursales } from '../controllers/sucursal.controller'
+import { obtenerZonas } from '../controllers/zona.controller'
 import { verifyToken } from '../middlewares/auth.middleware'
 
 const router = Router()
 
-router.get('/', verifyToken, obtenerSucursales)
+router.get('/', verifyToken, obtenerZonas)
 
 export default router

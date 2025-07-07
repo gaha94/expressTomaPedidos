@@ -1,14 +1,23 @@
 import { Request, Response } from 'express';
 import { db } from '../config/db';
 
-export const getProductos = async (_req: Request, res: Response) => {
+export const getProductos = async (req: Request, res: Response) => {
   try {
-    const [productos] = await db.query('SELECT * FROM productos');
-    res.json(productos);
-  } catch {
-    res.status(500).json({ message: 'Error al obtener productos' });
+    const [rows] = await db.query(`
+      SELECT 
+        ccodprod AS id, 
+        ctitprod AS nombre, 
+        ncpl1000 AS unidad, 
+        ncpl1011 AS precio 
+      FROM gx_producto
+    `)
+
+    res.json(rows)
+  } catch (error) {
+    console.error('Error al obtener productos:', error)
+    res.status(500).json({ error: 'Error al obtener productos' })
   }
-};
+}
 
 export const createProducto = async (req: Request, res: Response) => {
   const { nombre, descripcion, categoria, precio, stock, unidad_medida } = req.body;
