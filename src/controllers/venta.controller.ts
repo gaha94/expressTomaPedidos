@@ -60,7 +60,6 @@ export const obtenerVentasPendientes = async (_req: Request, res: Response) => {
   }
 }
 
-
 export const obtenerVentaPorId = async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
