@@ -6,7 +6,7 @@ import { generarPDFBuffer } from '../utils/pdf';
 import { transporter } from '../utils/mailer';
 import * as VentaModel from '../models/venta.model'  // ✅ Correcto
 import { VentaCompleta } from '../types/Venta';
-console.log('🟢 Entró al endpoint /ventas/por-zona')
+import crypto from 'crypto';
 
 export const obtenerVentas = async (req: Request, res: Response) => {
   const { estado } = req.query;
@@ -35,7 +35,7 @@ export const obtenerVentas = async (req: Request, res: Response) => {
 
     res.json(rows);
   } catch (error) {
-    console.error('Error al obtener ventas:', error);
+    console.error('Error al obt ener ventas:', error);
     res.status(500).json({ message: 'Error del servidor' });
   }
 };
@@ -73,35 +73,154 @@ export const obtenerVentaPorId = async (req: Request, res: Response) => {
 };
 
 export const crearVenta = async (req: Request, res: Response) => {
-  const { id_cliente, productos } = req.body;
-  const id_usuario = req.user?.id;
+  const { clienteId, serie, detalle } = req.body;
 
-  if (!productos || productos.length === 0) {
-    return res.status(400).json({ message: 'Debe agregar al menos un producto' });
+  // Validación inicial
+  if (
+    !clienteId ||
+    !serie ||
+    !serie.ctipdocu ||
+    !serie.cserdocu ||
+    !Array.isArray(detalle) ||
+    detalle.length === 0 ||
+    detalle.some((item: any) => !item.productoId || !item.tipoPrecio || !item.ncanprod)
+  ) {
+    return res.status(400).json({ message: 'Datos incompletos o incorrectos' });
   }
 
-  try {
-    const [result] = await db.query<ResultSetHeader>(
-      'INSERT INTO ventas (numero_venta, id_usuario, id_cliente) VALUES (?, ?, ?)',
-      [`V-${Date.now()}`, id_usuario, id_cliente]
-    );
-    const ventaId = result.insertId;
+  // Formatea productoId a 10 dígitos (string)
+  const detalleAjustado = detalle.map((item: any) => ({
+    ...item,
+    productoId: item.productoId.toString().padStart(10, "0"),
+  }));
 
-    for (const item of productos) {
-      const { id_producto, cantidad, precio_unitario } = item;
-      const subtotal = cantidad * precio_unitario;
-      await db.query(
-        'INSERT INTO detalle_venta (id_venta, id_producto, cantidad, precio_unitario, subtotal) VALUES (?, ?, ?, ?, ?)',
-        [ventaId, id_producto, cantidad, precio_unitario, subtotal]
+  const connection = await db.getConnection();
+  await connection.beginTransaction();
+
+  try {
+    // 🔑 Generar llave única
+    const crypto = await import('crypto');
+    const ccodinte = crypto.randomBytes(5).toString('hex'); // 10 caracteres
+    const ffecemis = new Date();
+
+    // 📄 Obtener serie desde gseriesweb
+    const [serieRows]: any = await connection.query(
+      'SELECT ccoddocu, ctipdocu, cserdocu FROM gseriesweb WHERE ctipdocu = ? AND cserdocu = ?',
+      [serie.ctipdocu, serie.cserdocu]
+    );
+    if (serieRows.length === 0) throw new Error('Serie no encontrada');
+    const { ccoddocu, ctipdocu, cserdocu } = serieRows[0];
+
+    // 👤 Obtener cliente
+    const [clienteRows]: any = await connection.query(
+      'SELECT ccodclie, crucclie, cnomclie, cdirclie FROM gx_cliente WHERE ccodclie = ?',
+      [clienteId]
+    );
+    if (clienteRows.length === 0) throw new Error('Cliente no encontrado');
+    const { ccodclie, crucclie, cnomclie, cdirclie } = clienteRows[0];
+
+    // 📦 Obtener todos los productos del pedido
+    const productoIds = detalleAjustado.map((item: any) => item.productoId);
+    let productos: any[] = [];
+    if (productoIds.length === 1) {
+      const [rows]: any = await connection.query(
+        `SELECT ccodprod, ncpl1011, ncpl2011, ncpl3011, ctitprod
+         FROM gx_producto WHERE ccodprod = ?`,
+        [productoIds[0]]
+      );
+      productos = rows;
+    } else {
+      const [rows]: any = await connection.query(
+        `SELECT ccodprod, ncpl1011, ncpl2011, ncpl3011, ctitprod
+         FROM gx_producto WHERE ccodprod IN (${productoIds.map(() => '?').join(',')})`,
+        productoIds
+      );
+      productos = rows;
+    }
+    if (productos.length !== productoIds.length) {
+      throw new Error('Uno o más productos no fueron encontrados');
+    }
+
+    let ntotdocu = 0;
+    const detalleProcesado = [];
+
+    function pad10(val: any) {
+      return val.toString().padStart(10, "0");
+    }
+
+    for (const item of detalleAjustado) {
+      const prod = productos.find((p: any) => pad10(p.ccodprod) === item.productoId);
+      if (!prod) {
+        throw new Error(`Producto con código ${item.productoId} no encontrado`);
+      }
+      const precioUnit =
+        item.tipoPrecio === "1" ? parseFloat(prod.ncpl1011) :
+        item.tipoPrecio === "2" ? parseFloat(prod.ncpl2011) :
+        item.tipoPrecio === "3" ? parseFloat(prod.ncpl3011) : 0;
+
+      const subtotal = +(precioUnit * item.ncanprod).toFixed(2);
+      ntotdocu += subtotal;
+
+      detalleProcesado.push({
+        ccodprod: prod.ccodprod,
+        ctitpro: prod.ctitprod,
+        precioUnit,
+        cantidad: item.ncanprod,
+        subtotal
+      });
+    }
+
+    const nvv_docu = +(ntotdocu / 1.18).toFixed(2);
+    const nigvdocu = +(ntotdocu - nvv_docu).toFixed(2);
+
+    // 📌 Insertar cabecera en `tx_salidac`
+    await connection.query(
+      `INSERT INTO tx_salidac (
+        nroticket, impreso, ffecvenc, ccodinte, ffectras, ffecemis,
+        ccoddocu, ctipdocu, cserdocu, cnumdocu,
+        ccodclie, crucclie, cnomclie, cdirclie,
+        ccodvend, ccodalba, nforpago, ctipmone, ntipcamb,
+        nvaligv_, nvv_docu, nigvdocu, ntotdocu,
+        ccodalma, canudocu, tipoventa, estado, is_web
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        '', 'N', '0001-01-01', ccodinte, '0001-01-01', ffecemis,
+        ccoddocu, ctipdocu, cserdocu, 0,
+        ccodclie, crucclie, cnomclie, cdirclie,
+        100, 1, 2, 'MN', 1,
+        18, nvv_docu, nigvdocu, ntotdocu,
+        1, 'N', 'H', 'Z', 1
+      ]
+    );
+
+    // 📌 Insertar detalles en `tx_salidad`
+    for (const item of detalleProcesado) {
+      await connection.query(
+        `INSERT INTO tx_salidad (
+          ncanvent, ctipregi, ccodinte, ccodalma, ccodprod,
+          ncanprod, cuniprod, npreunit, ntotregi, cdetdocu, ffecregi
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          item.cantidad, 'P', ccodinte, 1, item.ccodprod,
+          1, 'UNIDAD', item.precioUnit, item.subtotal,
+          item.ctitpro, ffecemis
+        ]
       );
     }
 
-    res.status(201).json({ message: 'Venta registrada', id: ventaId });
-  } catch (error) {
-    console.error('Error al registrar venta:', error);
-    res.status(500).json({ message: 'Error al registrar la venta' });
+    await connection.commit();
+    res.status(201).json({ message: 'Venta registrada correctamente', codigo: ccodinte });
+
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error al registrar venta:', error.message);
+    res.status(500).json({ message: error.message || 'Error al registrar venta' });
+
+  } finally {
+    connection.release();
   }
 };
+
 
 export const actualizarEstadoVenta = async (req: Request, res: Response) => {
   const { id } = req.params;
