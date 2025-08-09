@@ -8,18 +8,21 @@ export const getProductos = async (req: Request, res: Response) => {
         ccodprod AS id, 
         ctitprod AS nombre, 
         ncpl1000 AS unidad, 
+        antiguo AS marca,         -- <--- marca
+        nstock1 AS stock,         -- <--- stock
         ncpl1011 AS precio1,
         ncpl2011 AS precio2,
-        ncpl3011 AS precio3
+        ncpl3011 AS precio3,
+        detalle02 AS detalle   -- <--- Sin coma aquí
       FROM gx_producto
-    `)
+    `);
 
-    res.json(rows)
+    res.json(rows);
   } catch (error) {
-    console.error('Error al obtener productos:', error)
-    res.status(500).json({ error: 'Error al obtener productos' })
+    console.error('Error al obtener productos:', error);
+    res.status(500).json({ error: 'Error al obtener productos' });
   }
-}
+};
 
 export const createProducto = async (req: Request, res: Response) => {
   const { nombre, descripcion, categoria, precio, stock, unidad_medida } = req.body;

@@ -6,7 +6,6 @@ import { generarPDFBuffer } from '../utils/pdf';
 import { transporter } from '../utils/mailer';
 import * as VentaModel from '../models/venta.model'  // ✅ Correcto
 import { VentaCompleta } from '../types/Venta';
-import crypto from 'crypto';
 
 export const obtenerVentas = async (req: Request, res: Response) => {
   const { estado } = req.query;
@@ -374,31 +373,70 @@ export const cancelarVenta = async (req: Request, res: Response) => {
 }
 
 export const obtenerVentasDelVendedorHoy = async (req: Request, res: Response) => {
-  const vendedorId = req.user?.id;
-
-  if (!vendedorId) return res.status(401).json({ message: 'Vendedor no identificado' });
+  // Si tu middleware mete el vendedor en el token, úsalo; si no, traerá todas las ventas de hoy
+  const ccodvend = (req.user as any)?.ccodvend ?? null
 
   try {
-    const [rows] = await db.query<RowDataPacket[]>(
-      `SELECT 
-         v.id, v.numero_venta, v.fecha, v.estado, 
-         c.nombre AS cliente_nombre, c.telefono AS cliente_telefono,
-         SUM(d.subtotal) AS total
-       FROM ventas v
-       JOIN clientes c ON v.id_cliente = c.id
-       JOIN detalle_venta d ON v.id = d.id_venta
-       WHERE v.id_usuario = ? AND DATE(v.fecha) = CURDATE()
-       GROUP BY v.id
-       ORDER BY v.fecha DESC`,
-      [vendedorId]
-    );
+    // ffecemis en tu BD es DATE, así que no hace falta DATE(...):
+    // usa igualdad directa contra CURDATE()
+    const params: any[] = []
+    let where = 'c.ffecemis = CURDATE()'
 
-    res.json(rows);
-  } catch (error) {
-    console.error('Error al obtener ventas del vendedor:', error);
-    res.status(500).json({ message: 'Error al obtener ventas del vendedor' });
+    if (ccodvend != null) {
+      where += ' AND c.ccodvend = ?'
+      params.push(ccodvend)
+    }
+
+    // (Opcional) ping rápido para verificar acceso/tabla
+    // await db.query('SELECT 1')
+
+    const [rows] = await db.query<RowDataPacket[]>(
+      `
+      SELECT
+        c.ccodinte                                       AS id,
+        c.ffecemis                                       AS fecha,
+        c.ntotdocu                                       AS total,
+        c.ctipdocu,
+        c.cserdocu,
+        LPAD(c.cnumdocu, 8, '0')                         AS cnumdocu,
+        c.cnomclie                                       AS cliente_nombre,
+        c.crucclie                                       AS cliente_ruc,
+        c.cdirclie                                       AS cliente_direccion
+      FROM tx_salidac c
+      WHERE ${where}
+      ORDER BY c.ffecemis DESC, c.ccodinte DESC
+      `,
+      params
+    )
+
+    // Devuelve formateado para tu front (o devuelve rows si prefieres)
+    const data = rows.map(r => ({
+      id: String(r.id),
+      fecha: r.fecha,
+      total: Number(r.total || 0),
+      tipoComprobante: `${r.ctipdocu}/${r.cserdocu} ${r.cnumdocu}`,
+      cliente: {
+        nombres: r.cliente_nombre,
+        razonSocial: r.cliente_nombre,
+      },
+    }))
+
+    return res.json(data)
+  } catch (error: any) {
+    console.error('obtenerVentasDelVendedorHoy error:', {
+      message: error?.message,
+      code: error?.code,
+      sql: error?.sql,
+      sqlState: error?.sqlState,
+    })
+    // TEMPORAL: expón detalle para ver qué falla
+    return res.status(500).json({
+      message: 'Error al obtener ventas del vendedor',
+      detail: error?.message,
+      code: error?.code,
+    })
   }
-};
+}
 
 export const obtenerVentasPorSucursalYFecha = async (req: Request, res: Response) => {
   // Fuerza el tipo correcto
