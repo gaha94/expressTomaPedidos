@@ -74,7 +74,13 @@ export const obtenerVentaPorId = async (req: Request, res: Response) => {
 export const crearVenta = async (req: Request, res: Response) => {
   const { clienteId, serie, detalle } = req.body;
 
-  // Validación inicial
+  const ccodvend = (req as any)?.user.ccodvend;
+
+  if (!ccodvend || Number(ccodvend) === 0) {
+    return res.status(400).json({ message: 'Código de vendedor inválido' });
+  }
+
+  // Validación inicial básica
   if (
     !clienteId ||
     !serie ||
@@ -118,9 +124,10 @@ export const crearVenta = async (req: Request, res: Response) => {
     if (clienteRows.length === 0) throw new Error('Cliente no encontrado');
     const { ccodclie, crucclie, cnomclie, cdirclie } = clienteRows[0];
 
-    // 📦 Obtener todos los productos del pedido
+    // 📦 Obtener todos los productos del pedido (UNA SOLA VEZ)
     const productoIds = detalleAjustado.map((item: any) => item.productoId);
     let productos: any[] = [];
+
     if (productoIds.length === 1) {
       const [rows]: any = await connection.query(
         `SELECT ccodprod, ncpl1011, ncpl2011, ncpl3011, ctitprod
@@ -140,8 +147,16 @@ export const crearVenta = async (req: Request, res: Response) => {
       throw new Error('Uno o más productos no fueron encontrados');
     }
 
+    // ───────────────────────────────────────────────
+    // 🔧 Calcula precioUnit (incluye 'C' personalizado) y totales
     let ntotdocu = 0;
-    const detalleProcesado = [];
+    const detalleProcesado: Array<{
+      ccodprod: string
+      ctitpro: string
+      precioUnit: number
+      cantidad: number
+      subtotal: number
+    }> = [];
 
     function pad10(val: any) {
       return val.toString().padStart(10, "0");
@@ -152,44 +167,78 @@ export const crearVenta = async (req: Request, res: Response) => {
       if (!prod) {
         throw new Error(`Producto con código ${item.productoId} no encontrado`);
       }
-      const precioUnit =
-        item.tipoPrecio === "1" ? parseFloat(prod.ncpl1011) :
-        item.tipoPrecio === "2" ? parseFloat(prod.ncpl2011) :
-        item.tipoPrecio === "3" ? parseFloat(prod.ncpl3011) : 0;
 
-      const subtotal = +(precioUnit * item.ncanprod).toFixed(2);
-      ntotdocu += subtotal;
+      // precios de lista
+      const P1 = Number(prod.ncpl1011);
+      const P2 = Number(prod.ncpl2011);
+      const P3 = Number(prod.ncpl3011);
+
+      let unit: number;
+      if (item.tipoPrecio === 'C') {
+        // Esperamos que el front envíe precioUnit cuando es 'C'
+        const enviado = Number(item.precioUnit);
+        if (!Number.isFinite(enviado)) {
+          throw new Error(`precioUnit es requerido y numérico cuando tipoPrecio='C' (producto ${item.productoId})`);
+        }
+        if (enviado < P3) {
+          throw new Error(`precioUnit (S/ ${enviado.toFixed(2)}) no puede ser menor que P3 (S/ ${P3.toFixed(2)}) en el producto ${item.productoId}`);
+        }
+        unit = +enviado.toFixed(2);
+      } else {
+        unit = item.tipoPrecio === '1' ? P1
+             : item.tipoPrecio === '2' ? P2
+             : item.tipoPrecio === '3' ? P3
+             : 0;
+      }
+
+      const cantidad = Number(item.ncanprod);
+      const subtotal = +(unit * cantidad).toFixed(2);
+      ntotdocu = +(ntotdocu + subtotal).toFixed(2);
 
       detalleProcesado.push({
         ccodprod: prod.ccodprod,
         ctitpro: prod.ctitprod,
-        precioUnit,
-        cantidad: item.ncanprod,
+        precioUnit: unit,
+        cantidad,
         subtotal
       });
     }
+    // ───────────────────────────────────────────────
 
     const nvv_docu = +(ntotdocu / 1.18).toFixed(2);
     const nigvdocu = +(ntotdocu - nvv_docu).toFixed(2);
 
     // 📌 Insertar cabecera en `tx_salidac`
     await connection.query(
-      `INSERT INTO tx_salidac (
+      `INSERT INTO galaxia_alquiler008.tx_salidac (
         nroticket, impreso, ffecvenc, ccodinte, ffectras, ffecemis,
         ccoddocu, ctipdocu, cserdocu, cnumdocu,
         ccodclie, crucclie, cnomclie, cdirclie,
         ccodvend, ccodalba, nforpago, ctipmone, ntipcamb,
         nvaligv_, nvv_docu, nigvdocu, ntotdocu,
         ccodalma, canudocu, tipoventa, estado, is_web
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (
+        ?, ?, ?, ?, ?, CURDATE(),
+        ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?
+      )`,
       [
-        '', 'N', '0001-01-01', ccodinte, '0001-01-01', ffecemis,
+        'APP', 'N', '0001-01-01', ccodinte, '0001-01-01',
         ccoddocu, ctipdocu, cserdocu, 0,
         ccodclie, crucclie, cnomclie, cdirclie,
-        100, 1, 2, 'MN', 1,
+        ccodvend, 1, 2, 'MN', 1,
         18, nvv_docu, nigvdocu, ntotdocu,
         1, 'N', 'H', 'Z', 1
       ]
+    );
+
+    // (opcional) puedes verificar con un SELECT como ya haces:
+    await connection.query<RowDataPacket[]>(
+      `SELECT ccodinte FROM galaxia_alquiler008.tx_salidac WHERE ccodinte = ?`,
+      [ccodinte]
     );
 
     // 📌 Insertar detalles en `tx_salidad`
@@ -205,6 +254,7 @@ export const crearVenta = async (req: Request, res: Response) => {
           item.ctitpro, ffecemis
         ]
       );
+      // Nota: si tu esquema espera ncanprod = cantidad, cambia el 1 por item.cantidad
     }
 
     await connection.commit();
@@ -219,7 +269,6 @@ export const crearVenta = async (req: Request, res: Response) => {
     connection.release();
   }
 };
-
 
 export const actualizarEstadoVenta = async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -373,35 +422,56 @@ export const cancelarVenta = async (req: Request, res: Response) => {
 }
 
 export const obtenerVentasDelVendedorHoy = async (req: Request, res: Response) => {
-  // Si tu middleware mete el vendedor en el token, úsalo; si no, traerá todas las ventas de hoy
-  const ccodvend = (req.user as any)?.ccodvend ?? null
-
   try {
-    // ffecemis en tu BD es DATE, así que no hace falta DATE(...):
-    // usa igualdad directa contra CURDATE()
+    // 1) Lee query params
+    const qFecha = (req.query.fecha as string | undefined)?.trim()
+    const qVendedor = (req.query.ccodvend as string | undefined)?.trim()
+    const qTicket = ((req.query.nroticket as string | undefined) || 'APP').trim()
+
+    // 2) Si tienes el vendedor en el token, úsalo como fallback
+    const vendedorToken = (req as any)?.user?.ccodvend
+    const ccodvend = qVendedor ?? vendedorToken ?? null
+
+    // 3) Valida fecha YYYY-MM-DD (opcional). Si no viene, usa CURDATE()
+    const fechaRegex = /^\d{4}-\d{2}-\d{2}$/
+    const usarFechaParametro = !!qFecha && fechaRegex.test(qFecha)
+
+    // 4) Arma WHERE + params ordenados
     const params: any[] = []
-    let where = 'c.ffecemis = CURDATE()'
+    let where = ''
+
+    if (usarFechaParametro) {
+      where += 'c.ffecemis = ?'
+      params.push(qFecha)
+    } else {
+      where += 'c.ffecemis = CURDATE()'
+    }
 
     if (ccodvend != null) {
       where += ' AND c.ccodvend = ?'
       params.push(ccodvend)
     }
 
-    // (Opcional) ping rápido para verificar acceso/tabla
-    // await db.query('SELECT 1')
+    if (qTicket) {
+      where += ' AND c.nroticket = ?'
+      params.push(qTicket) // normalmente 'APP'
+    }
 
+    // 5) Query
     const [rows] = await db.query<RowDataPacket[]>(
       `
       SELECT
-        c.ccodinte                                       AS id,
-        c.ffecemis                                       AS fecha,
-        c.ntotdocu                                       AS total,
+        c.ccodinte                         AS id,
+        c.ffecemis                         AS fecha,
+        c.ntotdocu                         AS total,
         c.ctipdocu,
         c.cserdocu,
-        LPAD(c.cnumdocu, 8, '0')                         AS cnumdocu,
-        c.cnomclie                                       AS cliente_nombre,
-        c.crucclie                                       AS cliente_ruc,
-        c.cdirclie                                       AS cliente_direccion
+        LPAD(c.cnumdocu, 8, '0')           AS cnumdocu,
+        c.cnomclie                         AS cliente_nombre,
+        c.crucclie                         AS cliente_ruc,
+        c.cdirclie                         AS cliente_direccion,
+        c.ccodvend                         AS vendedor,
+        c.nroticket                        AS nroticket
       FROM tx_salidac c
       WHERE ${where}
       ORDER BY c.ffecemis DESC, c.ccodinte DESC
@@ -409,16 +479,22 @@ export const obtenerVentasDelVendedorHoy = async (req: Request, res: Response) =
       params
     )
 
-    // Devuelve formateado para tu front (o devuelve rows si prefieres)
+    // 6) Mapea a la forma que espera tu front
     const data = rows.map(r => ({
       id: String(r.id),
-      fecha: r.fecha,
+      fecha: r.fecha,                               // 'YYYY-MM-DD' (DATE)
       total: Number(r.total || 0),
+      tipo: r.ctipdocu,                             // por si lo necesitas crudo
+      serie: r.cserdocu,                            // por si lo necesitas crudo
       tipoComprobante: `${r.ctipdocu}/${r.cserdocu} ${r.cnumdocu}`,
       cliente: {
         nombres: r.cliente_nombre,
         razonSocial: r.cliente_nombre,
+        ruc: r.cliente_ruc,
+        direccion: r.cliente_direccion,
       },
+      ccodvend: r.vendedor,                         // útil para filtros de respaldo en el front
+      nroticket: r.nroticket,                       // debe ser 'APP'
     }))
 
     return res.json(data)
@@ -429,7 +505,6 @@ export const obtenerVentasDelVendedorHoy = async (req: Request, res: Response) =
       sql: error?.sql,
       sqlState: error?.sqlState,
     })
-    // TEMPORAL: expón detalle para ver qué falla
     return res.status(500).json({
       message: 'Error al obtener ventas del vendedor',
       detail: error?.message,

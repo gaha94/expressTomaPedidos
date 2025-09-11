@@ -1,12 +1,14 @@
+// src/middlewares/auth.middleware.ts
 import { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
 
 interface UserPayload {
   id: number
   nombre: string
+  ccodvend: number        // 👈 añade ccodvend
 }
 
-// Agregar propiedad al tipo Request
+// ✅ Extiende Request para que TS no se queje en req.user.ccodvend
 declare global {
   namespace Express {
     interface Request {
@@ -32,7 +34,15 @@ export const verifyToken = (req: Request, res: Response, next: NextFunction) => 
       return res.status(401).json({ message: 'Token inválido' })
     }
 
-    req.user = decoded as UserPayload
+    // 👇 decoded debe venir con ccodvend porque lo agregaste en el login
+    const payload = decoded as UserPayload
+
+    // Defensa: si el token no trae ccodvend, bloquea (coherente con tu política)
+    if (payload.ccodvend === undefined) {
+      return res.status(401).json({ message: 'Token inválido: falta ccodvend' })
+    }
+
+    req.user = payload
     next()
   } catch (err) {
     return res.status(401).json({ message: 'Token inválido o expirado' })

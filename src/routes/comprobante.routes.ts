@@ -6,6 +6,5 @@ const router = Router();
 
 router.get('/comprobantes', verifyToken, getComprobantes);
 router.get('/comprobantes/:ccodinte/pdf', verifyToken, getComprobantePdf);
-
 export default router;
     

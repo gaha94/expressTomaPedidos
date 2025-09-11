@@ -12,43 +12,76 @@ export const getClientes = async (_req: Request, res: Response) => {
   }
 }
 
-// Crear un nuevo cliente
+// Crear un nuevo cliente en gx_cliente (mapea a los campos que usa buscarClientes)
 export const createCliente = async (req: Request, res: Response) => {
   const {
-    tipo_documento,
-    documento,
-    nombre,
-    direccion,
-    telefono,
-    correo,
-    latitud,
-    longitud,
+    tipo_documento,      // "RUC" | "DNI"
+    documento,           // -> crucclie
+    nombre,              // -> cnomclie
+    direccion,           // -> cdirclie
+    alias1 = '',         // -> alias1 (nuevo)
+    telefono,            // opcional (si tienes columna)
+    correo,              // opcional (si tienes columna)
+    lat,                 // -> lat
+    long,                // -> long
     nestrella = 0,
     cestrella = ''
   } = req.body
 
-  if (!tipo_documento || !documento || !nombre || !direccion) {
+  if (!documento || !nombre || !direccion) {
     return res.status(400).json({ message: 'Faltan datos obligatorios' })
   }
 
+  // Normaliza documento
+  const doc = String(documento).trim()
+
+  // Validación de documento
+  if (tipo_documento === 'DNI') {
+    if (!/^\d{8}$/.test(doc)) {
+      return res.status(400).json({ message: 'DNI inválido. Debe tener 8 dígitos.' })
+    }
+  } else if (tipo_documento === 'RUC') {
+    if (!/^\d{11}$/.test(doc)) {
+      return res.status(400).json({ message: 'RUC inválido. Debe tener 11 dígitos.' })
+    }
+  } else {
+    if (doc.length > 20) {
+      return res.status(400).json({ message: 'Documento demasiado largo (máx 20 caracteres).' })
+    }
+  }
+
+  // --- Validación y normalización de coordenadas ---
+  const clampCoord = (v: any, min: number, max: number, decimals = 6) => {
+    if (v === undefined || v === null || v === '') return null
+    const n = Number(v)
+    if (Number.isNaN(n)) return null
+    if (n < min || n > max) return null
+    return Number(n.toFixed(decimals))
+  }
+
+  const latN = clampCoord(lat, -90, 90, 6)
+  const longN = clampCoord(long, -180, 180, 6)
+
   try {
     const [result]: any = await db.query(
-      `INSERT INTO clientes 
-        (tipo_documento, documento, nombre, direccion, telefono, correo, latitud, longitud, nestrella, cestrella)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [tipo_documento, documento, nombre, direccion, telefono, correo, latitud, longitud, nestrella, cestrella]
+      `INSERT INTO gx_cliente 
+        (crucclie, cnomclie, cdirclie, alias1, nestrella, cestrella, lat, \`long\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [doc, nombre, direccion, alias1, nestrella, cestrella, latN, longN]
     )
 
     res.status(201).json({
       message: 'Cliente registrado correctamente',
-      clienteId: result.insertId
+      clienteId: result.insertId ?? null
     })
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'El documento ya existe' })
+    }
     console.error('Error al registrar cliente:', error)
     res.status(500).json({ message: 'Error al registrar cliente' })
   }
 }
-
 
 // Actualizar un cliente
 export const updateCliente = async (req: Request, res: Response) => {
@@ -107,24 +140,32 @@ export const deleteCliente = async (req: Request, res: Response) => {
 };
 
 export const getClientesPorZona = async (req: Request, res: Response) => {
-  const { zona_id } = req.query;
+  const { zona_id } = req.query
 
   if (!zona_id) {
-    return res.status(400).json({ message: 'Debe proporcionar zona_id' });
+    return res.status(400).json({ message: 'Debe proporcionar zona_id' })
   }
 
   try {
     const [rows]: any = await db.query(
-      'SELECT ccodclie AS id, cnomclie AS nombre, saldo FROM gclientezona WHERE idzona = ?',
+      `SELECT 
+         g.ccodclie AS id,
+         g.cnomclie AS nombre,
+         IFNULL(c.alias1, '') AS alias1,
+         g.saldo
+       FROM gclientezona g
+       LEFT JOIN gx_cliente c ON c.ccodclie = g.ccodclie
+       WHERE g.idzona = ?`,
       [zona_id]
     )
 
-    res.json(rows);
+    res.json(rows)
   } catch (error) {
-    console.error('Error al obtener clientes por zona:', error);
-    res.status(500).json({ message: 'Error al obtener clientes por zona' });
+    console.error('Error al obtener clientes por zona:', error)
+    res.status(500).json({ message: 'Error al obtener clientes por zona' })
   }
 }
+
 
 export const getDeudaCliente = async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -152,15 +193,16 @@ export const getDetalleDeudaCliente = async (req: Request, res: Response) => {
   try {
     const [rows]: any = await db.query(
       `SELECT 
-        ffecdocu AS fecha,
-        cdetdocu AS detalle,
-        ntotdocu AS total,
-        SUM(ntotdocu) OVER (ORDER BY ccodregi, ffecdocu) AS saldo,
-        ctipregi,
-        ccodinte
-      FROM gx_creditos
-      WHERE ccodclie = ?
-      ORDER BY ccodregi, ffecdocu`,
+         ffecdocu AS fecha,
+         cdetdocu AS detalle,
+         ntotdocu AS total,
+         SUM(ntotdocu) OVER (ORDER BY ccodregi, ffecdocu) AS saldo,
+         ctipregi,
+         ccodinte
+       FROM gx_creditos
+       WHERE ccodclie = ?
+         AND canudocu = 'N'
+       ORDER BY ccodregi, ffecdocu`,
       [id]
     )
 
@@ -197,11 +239,8 @@ export const getDetalleComprobante = async (req: Request, res: Response) => {
 }
 // Controlador para buscar clientes por razón social
 export const buscarClientes = async (req: Request, res: Response) => {
-  const query = req.query.q as string
-
-  if (!query || query.trim() === '') {
-    return res.status(400).json({ error: 'Debe enviar el parámetro q' })
-  }
+  const q = String(req.query.q || '').trim()
+  if (!q) return res.status(400).json({ error: 'Debe enviar el parámetro q' })
 
   try {
     const [rows] = await db.execute(
@@ -212,12 +251,15 @@ export const buscarClientes = async (req: Request, res: Response) => {
          cdirclie, 
          nestrella, 
          cestrella, 
-         COALESCE(gx_cliente.lat, 'Sin ubicación') AS latitud, 
-         COALESCE(gx_cliente.long, 'Sin ubicación') AS longitud
+         alias1,                 -- 👈 incluir alias
+         lat  AS latitud, 
+         \`long\` AS longitud
        FROM gx_cliente
        WHERE cnomclie LIKE CONCAT('%', ?, '%')
+          OR (alias1 IS NOT NULL AND alias1 <> '' AND alias1 LIKE CONCAT('%', ?, '%')) -- opcional: buscar por alias
+       ORDER BY cnomclie
        LIMIT 10`,
-      [query]
+      [q, q]
     )
 
     res.json(rows)
@@ -226,3 +268,4 @@ export const buscarClientes = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Error interno del servidor' })
   }
 }
+
