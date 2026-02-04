@@ -8,12 +8,12 @@ export const getProductos = async (req: Request, res: Response) => {
         ccodprod AS id, 
         ctitprod AS nombre, 
         ncpl1000 AS unidad, 
-        antiguo AS marca,         -- <--- marca
-        nstock1 AS stock,         -- <--- stock
+        antiguo AS marca,
+        nstock1 AS stock,
         ncpl1011 AS precio1,
         ncpl2011 AS precio2,
         ncpl3011 AS precio3,
-        detalle02 AS detalle   -- <--- Sin coma aquí
+        detalle02 AS detalle
       FROM gx_producto
     `);
 

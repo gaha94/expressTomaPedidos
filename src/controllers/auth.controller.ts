@@ -7,7 +7,7 @@ interface User extends RowDataPacket {
   ctitusua: string
   cusuusua: string
   cpasusua: string
-  ccodvend: number // 100 habilitado, 0 bloqueado
+  ccodvend: number | null
 }
 
 export const login = async (req: Request, res: Response): Promise<Response> => {
@@ -16,11 +16,9 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
   try {
     const crypto = await import('crypto')
 
-    // Se siguen usando los mismos hashes MD5 que ya maneja tu BD
     const usuarioHash = crypto.createHash('md5').update(usuarioPlano).digest('hex')
     const passwordHash = crypto.createHash('md5').update(password).digest('hex')
 
-    // Trae solo las columnas necesarias, incluyendo ccodvend
     const [rows] = await db.query<User[]>(
       `
       SELECT 
@@ -42,15 +40,18 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
       return res.status(401).json({ message: 'Contraseña incorrecta' })
     }
 
-    // ✅ Nuevo: solo permite login si ccodvend = 100
-    if (!user.ccodvend || user.ccodvend === 0) {
-      return res.status(403).json({ message: 'El usuario no tiene registrado un código de vendedor' })
-    }
+    // ✅ Normaliza ccodvend: si no existe / 0 => null
+    const ccodvend =
+      typeof user.ccodvend === 'number' && Number.isFinite(user.ccodvend) && user.ccodvend > 0
+        ? user.ccodvend
+        : null
 
-    const token = require('../utils/jwt').generateToken({
+    const { generateToken } = require('../utils/jwt')
+
+    const token = generateToken({
       id: user.ccodusua,
       nombre: user.ctitusua,
-      ccodvend: user.ccodvend
+      ccodvend, // ✅ puede ser number o null
     })
 
     return res.json({
@@ -58,8 +59,8 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
       user: {
         id: user.ccodusua,
         nombre: user.ctitusua,
-        ccodvend: user.ccodvend
-      }
+        ccodvend,
+      },
     })
   } catch (error) {
     console.error('Error en login:', error)

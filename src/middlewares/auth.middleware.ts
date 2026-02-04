@@ -5,10 +5,9 @@ import jwt from 'jsonwebtoken'
 interface UserPayload {
   id: number
   nombre: string
-  ccodvend: number        // 👈 añade ccodvend
+  ccodvend?: number | null // ✅ ahora opcional/nullable
 }
 
-// ✅ Extiende Request para que TS no se queje en req.user.ccodvend
 declare global {
   namespace Express {
     interface Request {
@@ -34,15 +33,24 @@ export const verifyToken = (req: Request, res: Response, next: NextFunction) => 
       return res.status(401).json({ message: 'Token inválido' })
     }
 
-    // 👇 decoded debe venir con ccodvend porque lo agregaste en el login
     const payload = decoded as UserPayload
 
-    // Defensa: si el token no trae ccodvend, bloquea (coherente con tu política)
-    if (payload.ccodvend === undefined) {
-      return res.status(401).json({ message: 'Token inválido: falta ccodvend' })
+    // ✅ Validación mínima: id y nombre deben existir
+    if (!payload?.id || !payload?.nombre) {
+      return res.status(401).json({ message: 'Token inválido' })
     }
 
-    req.user = payload
+    // ✅ Normaliza: si viene 0, undefined o null => null
+    const raw = payload.ccodvend
+    const ccodvend =
+      typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null
+
+    req.user = {
+      id: payload.id,
+      nombre: payload.nombre,
+      ccodvend,
+    }
+
     next()
   } catch (err) {
     return res.status(401).json({ message: 'Token inválido o expirado' })

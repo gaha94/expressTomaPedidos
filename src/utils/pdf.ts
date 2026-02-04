@@ -1,12 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import PDFDocument from 'pdfkit';
+import QRCode from 'qrcode'; // NUEVO
 import { VentaCompleta } from '../types/Venta';
 
 /** Opcional: info de empresa y logo */
 type EmpresaInfo = {
   nombre: string;
-  ruc: string;
+  ruc: string; // puede venir como "RUC 2054..." o solo números
   direccion: string;
   telefono?: string;
   correo?: string;
@@ -20,9 +21,18 @@ type ComprobanteInfo = {
   tipo?: string;
   serie?: string;
   numero?: string;
+  hashCpe?: string; // opcional, por si lo traes aquí
 };
 
 const soles = (n: number) => `S/ ${Number(n || 0).toFixed(2)}`;
+
+/** Helpers NUEVOS */
+const digits = (s?: string) => String(s ?? '').replace(/\D+/g, '');
+const isZeros = (s?: string | null) => {
+  const t = String(s ?? '').trim();
+  return !t || /^0+$/.test(t);
+};
+const normalizeRuc = (rucLike: string) => digits(rucLike);
 
 /** Resuelve el título del comprobante según el tipo (01, 03, ...) */
 function getTituloComprobante(code?: string | null, fallback = 'COMPROBANTE') {
@@ -35,12 +45,10 @@ function getTituloComprobante(code?: string | null, fallback = 'COMPROBANTE') {
 /** Intenta extraer { code, serieNum } de un string tipo "01/F001-194" o "03/B101-889" */
 function parseDetalleLike(s?: string | null): { code?: string; serieNum?: string } {
   const t = String(s ?? '').trim();
-  // Formatos tolerados: "01/F001-194", "01- F001-194", "01 / F001-194"
   const m = t.match(/^(\d{2})\s*[\/-]\s*(.+)$/);
   if (m) return { code: m[1], serieNum: m[2].replace(/\s+/g, ' ').trim() };
   return {};
 }
-
 
 /** Dibuja una fila tipo "Etiqueta: Valor" */
 function rowText(
@@ -110,37 +118,84 @@ function drawSimpleTable(opts: {
   return y;
 }
 
+/** Construye el texto QR (SUNAT) si hay numeración real */
+/** Construye el texto QR EXACTO según especificación:
+ * RUC|TIPO|SERIE|NUMERO|MTO_TOTAL_IGV|MTO_TOTAL_COMPROBANTE|FECHA_EMISION|TIPO_DOC_ADQUIRENTE|NUM_DOC_ADQUIRENTE|VALOR_RESUMEN
+ *
+ * Notas:
+ * - TIPO: códigos SUNAT ("01" Factura, "03" Boleta).
+ * - FECHA: "YYYY-MM-DD".
+ * - MTO_TOTAL_IGV y MTO_TOTAL_COMPROBANTE: con 2 decimales, separador decimal ".", sin separador de miles.
+ * - TIPO_DOC_ADQUIRENTE: "6" (RUC, 11 dígitos), "1" (DNI, 8 dígitos), "4" (CE), "7" (Pasaporte). Si no hay, "-".
+ * - VALOR_RESUMEN: hash del CPE si lo tienes; si no, "-".
+ */
+function buildQrTextSunat(params: {
+  emisorRuc: string;            // RUC emisor (puede venir con "RUC 2054..." o solo números)
+  tipo: '01' | '03' | string;   // "01" | "03"
+  serie: string;                // p.ej. "F001"
+  numero: string;               // p.ej. "000123"
+  igv: number;                  // IGV total del comprobante
+  total: number;                // Importe total del comprobante
+  fechaISO: string;             // "YYYY-MM-DD"
+  receptorTipoDoc?: 'DNI' | 'RUC' | 'CE' | 'PAS';
+  receptorNumDoc?: string;
+  hashCpe?: string | null;      // VALOR RESUMEN (hash); si no lo tienes, usa "-"
+}) {
+  const digits = (s?: string) => String(s ?? '').replace(/\D+/g, '');
+  const normalizeRuc = (rucLike: string) => digits(rucLike);
+
+  const ruc = normalizeRuc(params.emisorRuc);
+  const tipo = String(params.tipo).padStart(2, '0'); // asegura "01"/"03"
+  const serie = (params.serie ?? '').toUpperCase().trim();
+  const correlativo = String(params.numero ?? '').trim().padStart(8, '0');
+
+  // Números siempre con punto decimal y 2 decimales, sin miles
+  const toAmount = (n: number) => Number(n || 0).toFixed(2);
+
+  const mtoTotalIgv = toAmount(params.igv);
+  const mtoTotalComprobante = toAmount(params.total);
+
+  // Fecha ya debe venir en "YYYY-MM-DD"; si no, la limpiamos mínimamente
+  const fecha = (params.fechaISO || '').slice(0, 10);
+
+  // Tipo Doc Adquirente
+  const mapTipoDocAdq = (td?: string) =>
+    td === 'RUC' ? '6' :
+    td === 'DNI' ? '1' :
+    td === 'CE'  ? '4' :
+    td === 'PAS' ? '7' : '-';
+
+  const tipoDocAdq = mapTipoDocAdq(params.receptorTipoDoc);
+  const numDocAdq = params.receptorNumDoc ? digits(params.receptorNumDoc) : '-';
+
+  const valorResumen = params.hashCpe && params.hashCpe.trim() ? params.hashCpe.trim() : '-';
+
+  // Orden EXACTO solicitado
+  return [
+    ruc,
+    tipo,
+    serie,
+    correlativo,
+    mtoTotalIgv,
+    mtoTotalComprobante,
+    fecha,
+    tipoDocAdq,
+    numDocAdq,
+    valorResumen,
+  ].join('|');
+}
+
 /**
  * Genera un PDF de comprobante en memoria (Buffer).
  * - Mantiene la firma original: (venta) => Promise<Buffer>
  * - NO guarda en disco. Todo se construye en memoria.
- * - Diseño: logo izq., empresa debajo; caja de comprobante a la derecha;
- *           datos del cliente; tabla de items; caja de totales.
- *
- * Requisitos mínimos esperados en VentaCompleta (adáptalo a tu tipo real):
- * {
- *   numero_venta: string;
- *   fecha: string; // YYYY-MM-DD o similar
- *   cliente: { nombre: string; documento: string; direccion: string };
- *   productos: Array<{
- *     nombre: string;
- *     precio_unitario: number;
- *     cantidad: number;
- *     subtotal: number;
- *     codigo?: string; unidad?: string;
- *   }>;
- *   total: number;
- *   comprobante?: { tipo?: string; serie?: string; numero?: string }; // opcional
- *   empresa?: EmpresaInfo; // opcional (si no está, se usa un default)
- * }
  */
 export const generarPDFBuffer = (venta: VentaCompleta): Promise<Buffer> => {
   // Defaults de empresa y comprobante (sobrescribibles desde venta)
   const EMPRESA_DEFAULT: EmpresaInfo = {
     nombre: 'DISTRIBUIDORA EL MAESTRITO S.A.C.',
     ruc: 'RUC 20541433890',
-    direccion: 'PJ. SANDINO NRO. 188 ANEXO INCHO   JUNIN - HUANCAYO - EL TAMBO',
-    // coloca un logo si quieres (e.g. 'assets/logo.png' relativo al proyecto)
+    direccion: 'PJ. SANDINO NRO. 188 ANEXO INCHO   JUNIN - HUANCAYO - EL TAMBO',
     logoPath: undefined,
   };
 
@@ -152,6 +207,40 @@ export const generarPDFBuffer = (venta: VentaCompleta): Promise<Buffer> => {
   const comprobante: ComprobanteInfo = {
     ...(venta as any).comprobante,
   };
+
+  // Derivar flags de numeración pendiente
+  const numeroRaw = comprobante?.numero;
+  const serieRaw = comprobante?.serie;
+  const tipoRaw  = comprobante?.tipo;  // "01" | "03" (ideal)
+
+  const isPendiente = isZeros(numeroRaw);
+  const hasNumeracion = !isPendiente && !!serieRaw && !!numeroRaw;
+
+  // Título de cabecera
+  const headerTitle = isPendiente
+    ? 'NOTA DE PEDIDO'
+    : getTituloComprobante(tipoRaw, 'COMPROBANTE');
+
+  // String de numeración (solo si emitido)
+  const numeracionStr = hasNumeracion ? `${String(serieRaw).trim()}-${String(numeroRaw).trim()}` : '';
+
+  // QR solo cuando haya numeración real
+  const shouldDrawQR = hasNumeracion && (tipoRaw === '01' || tipoRaw === '03');
+
+  // Si no tienes subtotal/igv guardados, calcula rápido suponiendo IGV 18%
+  const total = Number(venta.total ?? 0);
+  const subtotal = (venta as any).subtotal != null ? Number((venta as any).subtotal) : total / 1.18;
+  const igv = (venta as any).igv != null ? Number((venta as any).igv) : total - subtotal;
+
+  // Inferir tipo doc cliente si no lo tienes: 11=RUC(6), otro=DNI(1)
+  const clienteDoc = String(venta?.cliente?.documento ?? '');
+  const clienteTipoDoc: 'DNI' | 'RUC' | 'CE' | 'PAS' | undefined =
+    (venta as any)?.clienteTipoDoc
+      ? (venta as any).clienteTipoDoc
+      : (clienteDoc && digits(clienteDoc).length === 11 ? 'RUC' : 'DNI');
+
+  // Hash si lo tienes
+  const hashCpe = (comprobante as any)?.hashCpe ?? (venta as any)?.hashCpe ?? null;
 
   return new Promise((resolve) => {
     const doc = new PDFDocument({ size: 'A4', margin: 36 });
@@ -195,25 +284,25 @@ export const generarPDFBuffer = (venta: VentaCompleta): Promise<Buffer> => {
     if (empresa.telefono) doc.text(`Tel: ${empresa.telefono}`, empX, empY + 42);
     if (empresa.correo)   doc.text(empresa.correo, empX, empY + 56);
 
-    // Caja de comprobante a la derecha
-    const compBoxW = 240;
+    // Caja de cabecera a la derecha (AHORA DINÁMICA)
+    const compBoxW = 260;
     const compBoxH = 78;
     const compX = pageW - M.right - compBoxW;
     const compY = M.top;
     doc.roundedRect(compX, compY, compBoxW, compBoxH, 6).stroke();
-    doc.font('Helvetica-Bold').fontSize(14).text('COMPROBANTE', compX, compY + 14, { width: compBoxW, align: 'center' });
 
-    let compText = '';
-    if (comprobante?.tipo || comprobante?.serie || comprobante?.numero) {
-      compText = `${comprobante?.tipo ?? ''}/${comprobante?.serie ?? ''} ${comprobante?.numero ?? ''}`.trim();
-    } else if ((venta as any).tipoComprobante) {
-      // fallback si venía en otro campo como "01/F004 000123"
-      compText = String((venta as any).tipoComprobante);
-    } else {
-      compText = `Venta N° ${venta.numero_venta ?? ''}`.trim();
+    // Título: NOTA DE PEDIDO o FACTURA/BOLETA ELECTRÓNICA
+    doc.font('Helvetica-Bold').fontSize(14)
+      .text(headerTitle, compX, compY + 14, { width: compBoxW, align: 'center' });
+
+    // Numeración solo si emitido
+    if (hasNumeracion && numeracionStr) {
+      doc.font('Helvetica').fontSize(12)
+        .text(numeracionStr, compX, compY + 40, { width: compBoxW, align: 'center' });
     }
 
-    doc.font('Helvetica').fontSize(12).text(compText || '—', compX, compY + 40, { width: compBoxW, align: 'center' });
+    // (Si quisieras mostrar el "tipo" crudo cuando está pendiente, NO lo hacemos para cumplir tu regla)
+    // else: no mostrar nada de numeración ni tipo
 
     cursorY = Math.max(empY + 70, compY + compBoxH + 16);
 
@@ -222,7 +311,7 @@ export const generarPDFBuffer = (venta: VentaCompleta): Promise<Buffer> => {
     cursorY += 16;
     rowText(doc, 'Nombre / Razón Social:', venta.cliente?.nombre || '—', M.left, cursorY);
     cursorY += 14;
-    rowText(doc, 'Documento (RUC/DNI):', venta.cliente?.documento || '—', M.left, cursorY);
+    rowText(doc, 'Documento (RUC/DNI):', clienteDoc || '—', M.left, cursorY);
     cursorY += 14;
     rowText(doc, 'Dirección:', venta.cliente?.direccion || '—', M.left, cursorY);
     cursorY += 22;
@@ -231,7 +320,6 @@ export const generarPDFBuffer = (venta: VentaCompleta): Promise<Buffer> => {
     const widths = [90, 260, 50, 60, 80, 80]; // Código, Descripción, Und, Cant, P.Unit, Importe
     const head = ['Código', 'Descripción', 'Und', 'Cant', 'P. Unit', 'Importe'];
 
-    // Mapea tus campos a la tabla (usa fallbacks si no tienes código/unidad)
     const rows = (venta.productos || []).map((it: any) => [
       it.codigo ? String(it.codigo) : '',
       it.nombre ?? '',
@@ -252,11 +340,6 @@ export const generarPDFBuffer = (venta: VentaCompleta): Promise<Buffer> => {
     }) + 10;
 
     // === Totales (caja a la derecha) ===
-    // Si no tienes subtotal/igv guardados, calcula rápido suponiendo IGV 18%
-    const total = Number(venta.total ?? 0);
-    const subtotal = (venta as any).subtotal != null ? Number((venta as any).subtotal) : total / 1.18;
-    const igv = (venta as any).igv != null ? Number((venta as any).igv) : total - subtotal;
-
     const boxW = 230;
     const boxH = 78;
     const boxX = pageW - M.right - boxW;
@@ -274,7 +357,60 @@ export const generarPDFBuffer = (venta: VentaCompleta): Promise<Buffer> => {
     doc.text('Total:', boxX + 10, boxY + 56);
     doc.text(soles(total), boxX + boxW - 10, boxY + 56, { align: 'right' });
 
-    // === Pie ===
+    // === QR o sello de pendiente ===
+    // Posicionamos el QR en el pie izquierdo
+    const qrSize = 110;
+    const yQR = doc.page.height - doc.page.margins.bottom - qrSize - 10;
+    const xQR = doc.page.margins.left;
+
+    if (shouldDrawQR) {
+      // Construir texto QR
+      const qrText = buildQrTextSunat({
+        emisorRuc: empresa.ruc,
+        tipo: String(tipoRaw),
+        serie: String(serieRaw),
+        numero: String(numeroRaw),
+        igv,
+        total,
+        fechaISO: String((venta as any)?.fecha ?? '').slice(0, 10) || '', // "YYYY-MM-DD"
+        receptorTipoDoc: clienteTipoDoc,
+        receptorNumDoc: clienteDoc,
+        hashCpe,
+      });
+
+      // Generar QR base64 y dibujar
+      // NOTA: toDataURL es async, pero PDFKit escribe secuencialmente; usamos await-like con then antes de doc.end()
+      // Para mantener la firma sync aquí dentro, generamos el QR de forma bloqueante (pero en realidad QRCode.toDataURL devuelve Promise)
+      // Como ya estamos en una Promise externa, encadenamos .then y continuamos.
+      QRCode.toDataURL(qrText, { margin: 0 })
+        .then((qrDataUrl) => {
+          try {
+            doc.image(qrDataUrl, xQR, yQR, { fit: [qrSize, qrSize] });
+          } catch {
+            doc.fontSize(8).text('QR no disponible', xQR, yQR + 10);
+          }
+          // Pie / Mensaje final
+          doc.font('Helvetica').fontSize(9).fillColor('#000')
+            .text('Gracias por su compra.', M.left, boxY + boxH + 20);
+          doc.end();
+        })
+        .catch(() => {
+          doc.fontSize(8).text('QR no disponible', xQR, yQR + 10);
+          doc.font('Helvetica').fontSize(9).fillColor('#000')
+          doc.end();
+        });
+
+      return; // importante: salimos para esperar el QR y cerrar dentro del then/catch
+    } else {
+      // Pendiente: sello/nota
+      doc.fontSize(9).fillColor('#666')
+        .text('Documento sin numeración. Pendiente de aceptación en sistema de escritorio.', M.left, yQR + 20, {
+          width: 280
+        });
+      doc.fillColor('#000');
+    }
+
+    // Pie
     doc.font('Helvetica').fontSize(9).fillColor('#000').text('Gracias por su compra.', M.left, boxY + boxH + 20);
 
     // Cerrar stream => dispara 'end' y resolvemos el Buffer
